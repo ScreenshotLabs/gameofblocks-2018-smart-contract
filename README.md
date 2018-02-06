@@ -7,7 +7,7 @@ by Ethereum smart contracts
 
 This repo contains the Ethereum contract used to manage all kingdoms.
 
-
+![Game of Blocks castle](https://github.com/game-of-blocks/smart-contract/blob/master/images/Castle.png)
 
 ## How is it working
 
