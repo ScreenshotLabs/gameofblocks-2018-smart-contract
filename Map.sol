@@ -226,7 +226,7 @@ contract Map is MoneyRounderMixin, PullPayment, Destructible, ReentrancyGuard {
         kingdom.currentOwner = msg.sender;
 
         nbTransactions[msg.sender]++;
-        nbKingdoms[sender]++;
+        nbKingdoms[msg.sender]++;
 
         setNewWinner(msg.sender);
         LandPurchasedEvent(kingdomKey, msg.sender);
