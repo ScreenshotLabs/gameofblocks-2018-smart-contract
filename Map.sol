@@ -43,7 +43,7 @@ contract Map is MoneyRounderMixin, PullPayment, Destructible, ReentrancyGuard {
     Transaction[] public kingdomTransactions;
     uint public round;
 
-    uint public GLOBAL_COMPENSATION_RATIO = 20; 
+    uint constant public GLOBAL_COMPENSATION_RATIO = 20; 
     uint constant public STARTING_CLAIM_PRICE_WEI = 0.00133 ether;
 
     uint constant MAXIMUM_CLAIM_PRICE_WEI = 100 ether;
@@ -103,6 +103,8 @@ contract Map is MoneyRounderMixin, PullPayment, Destructible, ReentrancyGuard {
         uint transactionId = kingdomTransactions.push(Transaction(_key, owner, msg.value, 0, 0, now)) - 1;
         kingdoms[kingdomId].lastTransaction = transactionId;
         nbTransactions[owner] = 1;
+
+        setNewWinner(owner);
         LandCreatedEvent(_key, owner);
     }
 
@@ -114,18 +116,16 @@ contract Map is MoneyRounderMixin, PullPayment, Destructible, ReentrancyGuard {
         return nbKingdoms[addr];
     }
 
-    function setWinner() internal {
-        uint maxKingdoms = 0;
-        for (uint i = 0; i < kingdoms.length; i++) {
-            address addr = kingdoms[i].currentOwner;
-            nbKingdoms[addr]++;
-            if (nbKingdoms[addr] == maxKingdoms) {
-                if (nbTransactions[addr] > nbTransactions[winner]) {
-                    winner = addr;
+    function setNewWinner(address sender) internal {
+        if (winner == address(0)) {
+            winner = sender;
+        } else {
+            if (nbKingdoms[sender] == nbKingdoms[winner]) {
+                if (nbTransactions[sender] > nbTransactions[winner]) {
+                    winner = sender;
                 }
-            } else if (nbKingdoms[addr] > maxKingdoms) {
-                maxKingdoms = nbKingdoms[addr];
-                winner = addr;
+            } else if (nbKingdoms[sender] > nbKingdoms[winner]) {
+                winner = sender;
             }
         }
     }
@@ -140,8 +140,6 @@ contract Map is MoneyRounderMixin, PullPayment, Destructible, ReentrancyGuard {
 
         require(payment != 0);
         require(this.balance >= payment);
-
-        setWinner();
         require(winner != address(0));
 
         jackpot = 0;
@@ -225,6 +223,8 @@ contract Map is MoneyRounderMixin, PullPayment, Destructible, ReentrancyGuard {
         kingdom.lastTransaction = transactionId;
         kingdom.currentOwner = msg.sender;
         nbTransactions[msg.sender]++;
+
+        setNewWinner(msg.sender);
         LandPurchasedEvent(kingdomKey, msg.sender);
     }
 
