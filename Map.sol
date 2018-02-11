@@ -86,10 +86,10 @@ contract Map is MoneyRounderMixin, PullPayment, Destructible, ReentrancyGuard {
         remainingKingdoms = _remainingKingdoms;
     }
 
-    function createKingdom(address owner, string _key, string _title) public payable {
+    function createKingdom(address sender, string _key, string _title) public payable {
 
         require(msg.value >= STARTING_CLAIM_PRICE_WEI);
-        require(owner != address(0));
+        require(sender != address(0));
         require(kingdomsCreated[_key] == false);
         require(remainingKingdoms > 0);
 
@@ -97,15 +97,17 @@ contract Map is MoneyRounderMixin, PullPayment, Destructible, ReentrancyGuard {
 
         uint currentPrice = msg.value + (msg.value * GLOBAL_JACKPOT_COMMISSION_RATIO / 100) + (msg.value * GLOBAL_TEAM_COMMISSION_RATIO / 100) + (msg.value * GLOBAL_COMPENSATION_RATIO / 100);
 
-        uint kingdomId = kingdoms.push(Kingdom(_title, _key, currentPrice, 0, 1, owner)) - 1;
+        uint kingdomId = kingdoms.push(Kingdom(_title, _key, currentPrice, 0, 1, sender)) - 1;
         kingdomsKeys[_key] = kingdomId;
         kingdomsCreated[_key] = true;
-        uint transactionId = kingdomTransactions.push(Transaction(_key, owner, msg.value, 0, 0, now)) - 1;
+        uint transactionId = kingdomTransactions.push(Transaction(_key, sender, msg.value, 0, 0, now)) - 1;
         kingdoms[kingdomId].lastTransaction = transactionId;
-        nbTransactions[owner] = 1;
+       
+        nbTransactions[sender]++;
+        nbKingdoms[sender]++;
 
-        setNewWinner(owner);
-        LandCreatedEvent(_key, owner);
+        setNewWinner(sender);
+        LandCreatedEvent(_key, sender);
     }
 
     function isFinalized() public view returns (bool) {
@@ -222,7 +224,9 @@ contract Map is MoneyRounderMixin, PullPayment, Destructible, ReentrancyGuard {
         kingdom.transactionCount++;
         kingdom.lastTransaction = transactionId;
         kingdom.currentOwner = msg.sender;
+
         nbTransactions[msg.sender]++;
+        nbKingdoms[sender]++;
 
         setNewWinner(msg.sender);
         LandPurchasedEvent(kingdomKey, msg.sender);
@@ -236,10 +240,19 @@ contract Map is MoneyRounderMixin, PullPayment, Destructible, ReentrancyGuard {
         Kingdom storage kingdom = kingdoms[kingdomsKeys[kingdomKey]];
         address compensationAddress = kingdomTransactions[kingdom.lastTransaction].compensationAddress;
         kingdomTransactions[kingdom.lastTransaction].compensation = compensationWei;
-        bool sentOk = compensationAddress.send(compensationWei);
-        if (sentOk == false) {
-            payments[compensationAddress] += compensationWei;
-        }
+        asyncSend(compensationAddress, compensationWei);
+    }
+
+    function forceWithdrawPayments(address payee) public onlyOwner {
+        uint256 payment = payments[payee];
+
+        require(payment != 0);
+        require(this.balance >= payment);
+
+        totalPayments = totalPayments.sub(payment);
+        payments[payee] = 0;
+
+        assert(payee.send(payment));
     }
 
 }
