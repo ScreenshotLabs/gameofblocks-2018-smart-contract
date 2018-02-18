@@ -78,90 +78,20 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
     event LandCreatedEvent(string kingdomKey, address monarchAddress);
     event LandPurchasedEvent(string kingdomKey, address monarchAddress);
  
+    //
+    //  CONTRACT CONSTRUCTOR
+    //
     function Map(address _bookerAddress, uint _remainingKingdoms) {
         bookerAddress = _bookerAddress;
         endTime = now + 7 days;
         remainingKingdoms = _remainingKingdoms;
     }
 
-    function createKingdom(address sender, string _key, string _title) public payable {
-
-        require(msg.value >= STARTING_CLAIM_PRICE_WEI);
-        require(sender != address(0));
-        require(kingdomsCreated[_key] == false);
-        require(remainingKingdoms > 0);
-
-        remainingKingdoms--;
-
-        uint nextPrice = msg.value + (msg.value * GLOBAL_JACKPOT_COMMISSION_RATIO / 100) + (msg.value * GLOBAL_TEAM_COMMISSION_RATIO / 100) + (msg.value * GLOBAL_COMPENSATION_RATIO / 100);
-        uint kingdomId = kingdoms.push(Kingdom(_title, _key, nextPrice, 0, 1, sender)) - 1;
-        kingdomsKeys[_key] = kingdomId;
-        kingdomsCreated[_key] = true;
-        uint transactionId = kingdomTransactions.push(Transaction(_key, sender, msg.value, 0, 0, now)) - 1;
-        kingdoms[kingdomId].lastTransaction = transactionId;
-       
-        nbTransactions[sender]++;
-        nbKingdoms[sender]++;
-
-
-
-        setNewWinner(sender);
-        LandCreatedEvent(_key, sender);
-    }
-
-    function isFinalized() public view returns (bool) {
-        return now >= endTime;
-    }
-
-    function getKingdomsNumberByAddress(address addr) public view returns (uint nb) {
-        return nbKingdoms[addr];
-    }
-
-    function setNewWinner(address sender) internal {
-        if (winner == address(0)) {
-            winner = sender;
-        } else {
-            if (nbKingdoms[sender] == nbKingdoms[winner]) {
-                if (nbTransactions[sender] > nbTransactions[winner]) {
-                    winner = sender;
-                }
-            } else if (nbKingdoms[sender] > nbKingdoms[winner]) {
-                winner = sender;
-            }
-        }
-    }
-
-    function getCurrentOwner(uint kingdomId) public view returns (address addr) {
-        return kingdoms[kingdomId].currentOwner;
-    }
-
-    function sendJackpot() public onlyOwner() {
-        require(kingdoms.length > 0);
-        uint payment = jackpot;
-
-        require(payment != 0);
-        require(this.balance >= payment);
-        require(winner != address(0));
-
-        jackpot = 0;
-        endTime = now + 7 days;
-        remainingKingdoms += 3;
-        round++;
-
-        assert(winner.send(payment));
-    }
-
-    function getKingdomCount() public view returns (uint kingdomCount) {
-        return kingdoms.length;
-    }
-
-    function getKingdomInformations(string kingdomKey) public view returns (string title, uint currentPrice, uint lastTransaction, uint transactionCount, address currentOwner) {
-        Kingdom storage kingdom = kingdoms[kingdomsKeys[kingdomKey]];
-        return (kingdom.title, kingdom.currentPrice, kingdom.lastTransaction, kingdom.transactionCount, kingdom.currentOwner);
-    }
-
     function () { }
 
+    //
+    //  This is the main function. It is called to buy a kingdom
+    //
     function purchaseKingdom(string kingdomKey, string title) public 
     payable 
     nonReentrant()
@@ -206,10 +136,42 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
         LandPurchasedEvent(kingdomKey, msg.sender);
     }
 
+    //
+    //  User can call this function to generate new kingdoms (within the limits of available land)
+    //
+    function createKingdom(address sender, string _key, string _title) public payable {
+
+        require(msg.value >= STARTING_CLAIM_PRICE_WEI);
+        require(sender != address(0));
+        require(kingdomsCreated[_key] == false);
+        require(remainingKingdoms > 0);
+
+        remainingKingdoms--;
+
+        uint nextPrice = msg.value + (msg.value * GLOBAL_JACKPOT_COMMISSION_RATIO / 100) + (msg.value * GLOBAL_TEAM_COMMISSION_RATIO / 100) + (msg.value * GLOBAL_COMPENSATION_RATIO / 100);
+        uint kingdomId = kingdoms.push(Kingdom(_title, _key, nextPrice, 0, 1, sender)) - 1;
+        kingdomsKeys[_key] = kingdomId;
+        kingdomsCreated[_key] = true;
+        uint transactionId = kingdomTransactions.push(Transaction(_key, sender, msg.value, 0, 0, now)) - 1;
+        kingdoms[kingdomId].lastTransaction = transactionId;
+       
+        nbTransactions[sender]++;
+        nbKingdoms[sender]++;
+
+        setNewWinner(sender);
+        LandCreatedEvent(_key, sender);
+    }
+
+    //
+    //  Record fees payment 
+    //
     function recordCommissionEarned(uint _commissionWei) internal {
         asyncSend(bookerAddress, _commissionWei);
     }
 
+    //
+    //  Send transaction to compensate the previous owner
+    //
     function compensateLatestMonarch(string kingdomKey, uint compensationWei) internal {
         Kingdom storage kingdom = kingdoms[kingdomsKeys[kingdomKey]];
         address compensationAddress = kingdomTransactions[kingdom.lastTransaction].compensationAddress;
@@ -217,6 +179,9 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
         asyncSend(compensationAddress, compensationWei);
     }
 
+    //
+    //  This function may be useful to force withdraw if user never come back to get his money
+    //
     function forceWithdrawPayments(address payee) public onlyOwner {
         uint256 payment = payments[payee];
 
@@ -227,6 +192,62 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
         payments[payee] = 0;
 
         assert(payee.send(payment));
+    }
+
+    //
+    //  After time expiration, owner can call this function to activate the next round of the game
+    //
+    function sendJackpot() public onlyOwner() {
+        require(kingdoms.length > 0);
+        uint payment = jackpot;
+
+        require(payment != 0);
+        require(this.balance >= payment);
+        require(winner != address(0));
+
+        jackpot = 0;
+        endTime = now + 7 days;
+        remainingKingdoms += 3;
+        round++;
+
+        assert(winner.send(payment));
+    }
+
+    // GETTER AND SETTER FUNCTIONS
+
+    function setNewWinner(address sender) internal {
+        if (winner == address(0)) {
+            winner = sender;
+        } else {
+            if (nbKingdoms[sender] == nbKingdoms[winner]) {
+                if (nbTransactions[sender] > nbTransactions[winner]) {
+                    winner = sender;
+                }
+            } else if (nbKingdoms[sender] > nbKingdoms[winner]) {
+                winner = sender;
+            }
+        }
+    }
+
+    function isFinalized() public view returns (bool) {
+        return now >= endTime;
+    }
+
+    function getKingdomsNumberByAddress(address addr) public view returns (uint nb) {
+        return nbKingdoms[addr];
+    }
+
+    function getCurrentOwner(uint kingdomId) public view returns (address addr) {
+        return kingdoms[kingdomId].currentOwner;
+    }
+
+    function getKingdomCount() public view returns (uint kingdomCount) {
+        return kingdoms.length;
+    }
+
+    function getKingdomInformations(string kingdomKey) public view returns (string title, uint currentPrice, uint lastTransaction, uint transactionCount, address currentOwner) {
+        Kingdom storage kingdom = kingdoms[kingdomsKeys[kingdomKey]];
+        return (kingdom.title, kingdom.currentPrice, kingdom.lastTransaction, kingdom.transactionCount, kingdom.currentOwner);
     }
 
 }
