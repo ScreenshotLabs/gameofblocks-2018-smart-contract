@@ -155,33 +155,6 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
         return kingdoms.length;
     }
 
-    // function currentClaimPriceWei(string kingdomKey) public view returns (uint priceInWei) {
-        
-    //     if (kingdoms[kingdomsKeys[kingdomKey]].transactionCount == 0) {
-    //         return STARTING_CLAIM_PRICE_WEI;
-    //     }
-
-    //     uint lastPrice = lastBuyingPrice[kingdomKey];
-    //     uint teamCommission = lastPrice * GLOBAL_TEAM_COMMISSION_RATIO / 100;
-    //     uint jackpotCommision = lastPrice * GLOBAL_JACKPOT_COMMISSION_RATIO / 100;
-    //     uint compensation = lastPrice * GLOBAL_COMPENSATION_RATIO / 100;
-    //     uint newClaimPrice = lastPrice + teamCommission + jackpotCommision + compensation;
-
-    //     // newClaimPrice = roundMoneyDownNicely(lastPrice);
-
-    //     if (newClaimPrice < STARTING_CLAIM_PRICE_WEI) {
-    //         newClaimPrice = STARTING_CLAIM_PRICE_WEI;
-    //     }
-
-    //     if (newClaimPrice > MAXIMUM_CLAIM_PRICE_WEI) {
-    //         newClaimPrice = MAXIMUM_CLAIM_PRICE_WEI;
-    //     }
-
-    //     // priceLogs.push(ValueLog(lastPrice, newClaimPrice));
-
-    //     return newClaimPrice;
-    // }
-
     function getKingdomInformations(string kingdomKey) public view returns (string title, uint currentPrice, uint lastTransaction, uint transactionCount, address currentOwner) {
         Kingdom storage kingdom = kingdoms[kingdomsKeys[kingdomKey]];
         return (kingdom.title, kingdom.currentPrice, kingdom.lastTransaction, kingdom.transactionCount, kingdom.currentOwner);
@@ -189,7 +162,6 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
 
     function () { }
 
-   // 
     function purchaseKingdom(string kingdomKey, string title) public 
     payable 
     nonReentrant()
