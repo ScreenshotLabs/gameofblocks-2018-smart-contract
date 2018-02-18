@@ -29,13 +29,14 @@ contract Map is MoneyRounderMixin, PullPayment, Destructible, ReentrancyGuard {
         address currentOwner;
     }
 
+    mapping (string => uint) private lastBuyingPrice;
     mapping(string => uint) kingdomsKeys;
     mapping(string => bool) kingdomsCreated;
     mapping(address => uint) nbKingdoms;
     mapping(address => uint) public nbTransactions;
     uint remainingKingdoms;
 
-    address public winner;
+    address public winner = address(0);
     uint public endTime;
     uint public jackpot = 0;
     address public bookerAddress;
@@ -46,7 +47,7 @@ contract Map is MoneyRounderMixin, PullPayment, Destructible, ReentrancyGuard {
     uint constant public GLOBAL_COMPENSATION_RATIO = 20; 
     uint constant public STARTING_CLAIM_PRICE_WEI = 0.00133 ether;
 
-    uint constant MAXIMUM_CLAIM_PRICE_WEI = 100 ether;
+    uint constant MAXIMUM_CLAIM_PRICE_WEI = 500 ether;
     uint constant GLOBAL_TEAM_COMMISSION_RATIO = 15;
     uint constant GLOBAL_JACKPOT_COMMISSION_RATIO = 15;
     uint constant TEAM_COMMISSION_RATIO = 10;
@@ -97,6 +98,7 @@ contract Map is MoneyRounderMixin, PullPayment, Destructible, ReentrancyGuard {
 
         uint currentPrice = msg.value + (msg.value * GLOBAL_JACKPOT_COMMISSION_RATIO / 100) + (msg.value * GLOBAL_TEAM_COMMISSION_RATIO / 100) + (msg.value * GLOBAL_COMPENSATION_RATIO / 100);
 
+        lastBuyingPrice[_key] = 0;
         uint kingdomId = kingdoms.push(Kingdom(_title, _key, currentPrice, 0, 1, sender)) - 1;
         kingdomsKeys[_key] = kingdomId;
         kingdomsCreated[_key] = true;
@@ -105,6 +107,8 @@ contract Map is MoneyRounderMixin, PullPayment, Destructible, ReentrancyGuard {
        
         nbTransactions[sender]++;
         nbKingdoms[sender]++;
+
+
 
         setNewWinner(sender);
         LandCreatedEvent(_key, sender);
@@ -162,14 +166,12 @@ contract Map is MoneyRounderMixin, PullPayment, Destructible, ReentrancyGuard {
             return STARTING_CLAIM_PRICE_WEI;
         }
 
-        Transaction storage transaction = kingdomTransactions[kingdoms[kingdomsKeys[kingdomKey]].lastTransaction];
-
-        uint lastBuyingPrice = transaction.buyingPrice;
-        uint teamCommission = lastBuyingPrice * GLOBAL_TEAM_COMMISSION_RATIO / 100;
-        uint jackpotCommision = lastBuyingPrice * GLOBAL_JACKPOT_COMMISSION_RATIO / 100;
-        uint compensation = lastBuyingPrice * GLOBAL_COMPENSATION_RATIO / 100;
-        uint newClaimPrice = lastBuyingPrice + teamCommission + jackpotCommision + compensation;
-        newClaimPrice = roundMoneyDownNicely(lastBuyingPrice);
+        uint lastPrice = lastBuyingPrice[kingdomKey];
+        uint teamCommission = lastPrice * GLOBAL_TEAM_COMMISSION_RATIO / 100;
+        uint jackpotCommision = lastPrice * GLOBAL_JACKPOT_COMMISSION_RATIO / 100;
+        uint compensation = lastPrice * GLOBAL_COMPENSATION_RATIO / 100;
+        uint newClaimPrice = lastPrice + teamCommission + jackpotCommision + compensation;
+        newClaimPrice = roundMoneyDownNicely(lastPrice);
 
         if (newClaimPrice < STARTING_CLAIM_PRICE_WEI) {
             newClaimPrice = STARTING_CLAIM_PRICE_WEI;
@@ -218,6 +220,7 @@ contract Map is MoneyRounderMixin, PullPayment, Destructible, ReentrancyGuard {
         jackpot = jackpot + jackpotCommission;
         kingdom.title = title;
 
+        lastBuyingPrice[kingdomKey] = kingdomTransactions[kingdom.lastTransaction].buyingPrice;
         kingdom.currentPrice = msg.value + (msg.value * GLOBAL_JACKPOT_COMMISSION_RATIO / 100) + (msg.value * GLOBAL_TEAM_COMMISSION_RATIO / 100) + (msg.value * GLOBAL_COMPENSATION_RATIO / 100);
         uint transactionId = kingdomTransactions.push(Transaction("", msg.sender, msg.value, 0, jackpotCommission, now)) - 1;
         kingdomTransactions[transactionId].kingdomKey = kingdomKey;
