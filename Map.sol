@@ -4,8 +4,10 @@ import 'zeppelin-solidity/contracts/ownership/Ownable.sol';
 import 'zeppelin-solidity/contracts/payment/PullPayment.sol';
 import 'zeppelin-solidity/contracts/lifecycle/Destructible.sol';
 import 'zeppelin-solidity/contracts/ReentrancyGuard.sol';
+import "zeppelin-solidity/contracts/math/SafeMath.sol";
 
 contract Map is PullPayment, Destructible, ReentrancyGuard {
+    using SafeMath for uint256;
 
     // STRUCTS
 
@@ -14,42 +16,48 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
         address compensationAddress;
         uint buyingPrice;
         uint compensation;
-        uint jackpotContribution;
-        uint date;
     }
 
     struct Kingdom {
         string title;
         string key;
+        uint8 kingdomTier;
+        uint8 kingdomType;
         uint currentPrice;
         uint lastTransaction;
         uint transactionCount;
-        address currentOwner;
+        uint lastPrice;
+        address owner;
     }
+
+    struct Jackpot {
+        address owner;
+        uint balance;
+        uint endTime;
+        uint nbKingdoms;
+    }
+
+    uint remainingKingdoms;
 
     mapping(string => uint) kingdomsKeys;
     mapping(string => bool) kingdomsCreated;
     mapping(address => uint) nbKingdoms;
     mapping(address => uint) public nbTransactions;
-    uint remainingKingdoms;
 
-    address public winner = address(0);
-    uint public endTime;
-    uint public jackpot = 0;
+    Jackpot[] public jackpots;
+    Jackpot public globalJackpot;
+
     address public bookerAddress;
     Kingdom[] public kingdoms;
     Transaction[] public kingdomTransactions;
     uint public round;
-    
-    uint constant public GLOBAL_COMPENSATION_RATIO = 20; 
-    uint constant public STARTING_CLAIM_PRICE_WEI = 0.00133 ether;
 
-    uint constant MAXIMUM_CLAIM_PRICE_WEI = 500 ether;
-    uint constant GLOBAL_TEAM_COMMISSION_RATIO = 15;
-    uint constant GLOBAL_JACKPOT_COMMISSION_RATIO = 15;
+    uint constant public STARTING_CLAIM_PRICE_WEI = 0.00133 ether;
+    uint constant MAXIMUM_CLAIM_PRICE_WEI = 1000 ether;
+    uint constant KINGDOM_MULTIPLIER = 20;
     uint constant TEAM_COMMISSION_RATIO = 10;
     uint constant JACKPOT_COMMISSION_RATIO = 10;
-    uint constant COMPENSATION_RATIO = 80;
+
 
     // MODIFIERS
 
@@ -60,11 +68,6 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
 
     modifier checkIsOpen() {
         require(!isFinalized());
-        _;
-    }
-    
-    modifier checkKingdomCost(uint kingdomIndex) {
-        require (msg.value >= kingdoms[kingdomIndex].currentPrice);
         _;
     }
 
@@ -83,83 +86,122 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
     //
     function Map(address _bookerAddress, uint _remainingKingdoms) {
         bookerAddress = _bookerAddress;
-        endTime = now + 7 days;
+        globalJackpot.endTime = now + 7 days;
         remainingKingdoms = _remainingKingdoms;
+
+        jackpots.push(Jackpot(address(0), 0, now + 7 days, 0));
+        jackpots.push(Jackpot(address(0), 0, now + 7 days, 0));
+        jackpots.push(Jackpot(address(0), 0, now + 7 days, 0));
+        jackpots.push(Jackpot(address(0), 0, now + 7 days, 0));
+
+        globalJackpot = Jackpot(address(0), 0, now + 7 days, 0);
     }
 
     function () { }
 
+    function getMinimumPrice(string kingdomKey, uint kingdomType) public view returns (uint nextPrice) {
+        uint kingdomId = kingdomsKeys[kingdomKey];
+        Kingdom storage kingdom = kingdoms[kingdomId];
+
+        uint optionPrice = kingdom.lastPrice * kingdomType * KINGDOM_MULTIPLIER / 100;
+        uint jackpotCommission = kingdom.lastPrice * JACKPOT_COMMISSION_RATIO / 100;
+        uint teamCommission = kingdom.lastPrice * TEAM_COMMISSION_RATIO / 100;
+
+        uint price = kingdom.lastPrice + jackpotCommission + teamCommission + optionPrice;
+        return price;
+    }
+
     //
     //  This is the main function. It is called to buy a kingdom
     //
-    function purchaseKingdom(string kingdomKey, string title) public 
+    function purchaseKingdom(string _key, string _title, uint8 _type,  uint8 _tier) public 
     payable 
     nonReentrant()
     checkMaxPrice()
     checkIsOpen()
-    checkKingdomExistence(kingdomKey)
-    checkKingdomCost(kingdomsKeys[kingdomKey])
+    checkKingdomExistence(_key)
     {
-
-        uint kingdomId = kingdomsKeys[kingdomKey];
+        uint kingdomId = kingdomsKeys[_key];
         Kingdom storage kingdom = kingdoms[kingdomId];
-        
-        uint jackpotCommission = 0;
-        uint teamCommission = 0; 
 
-        teamCommission = msg.value * TEAM_COMMISSION_RATIO / 100;
-        jackpotCommission = msg.value * JACKPOT_COMMISSION_RATIO / 100;
+        uint optionPrice = kingdom.lastPrice * _tier * KINGDOM_MULTIPLIER / 100;
+        uint jackpotCommission = kingdom.lastPrice * JACKPOT_COMMISSION_RATIO / 100;
+        uint teamCommission = kingdom.lastPrice * TEAM_COMMISSION_RATIO / 100;
+
+        uint price = kingdom.lastPrice + jackpotCommission + teamCommission + optionPrice;
+        require (msg.value >= price);
+
+        uint currentPrice = price + optionPrice;
 
         if (teamCommission != 0) {
             recordCommissionEarned(teamCommission);
         }
 
-        uint compensationWei = msg.value * COMPENSATION_RATIO / 100; 
-        if (compensationWei > 0) {
-            compensateLatestMonarch(kingdomKey, compensationWei);
+        if (kingdom.lastPrice > 0) {
+            compensateLatestMonarch(kingdom.lastTransaction, kingdom.lastPrice);
         }
         
-        jackpot = jackpot + jackpotCommission;
-        kingdom.title = title;
+        globalJackpot.balance = globalJackpot.balance.add(jackpotCommission.mul(90).div(100));
 
-        kingdom.currentPrice = msg.value + (msg.value * GLOBAL_JACKPOT_COMMISSION_RATIO / 100) + (msg.value * GLOBAL_TEAM_COMMISSION_RATIO / 100) + (msg.value * GLOBAL_COMPENSATION_RATIO / 100);
-        uint transactionId = kingdomTransactions.push(Transaction("", msg.sender, msg.value, 0, jackpotCommission, now)) - 1;
-        kingdomTransactions[transactionId].kingdomKey = kingdomKey;
+        kingdom.kingdomType = _type;
+        kingdom.kingdomTier = _tier;
+        kingdom.title = _title;
+        kingdom.lastPrice = currentPrice;
+        kingdom.currentPrice = calculatePrice(currentPrice);
+        kingdom.owner = msg.sender;
+
+        uint transactionId = kingdomTransactions.push(Transaction("", msg.sender, msg.value, 0)) - 1;
+        kingdomTransactions[transactionId].kingdomKey = _key;
+        
         kingdom.transactionCount++;
         kingdom.lastTransaction = transactionId;
-        kingdom.currentOwner = msg.sender;
 
         nbTransactions[msg.sender]++;
         nbKingdoms[msg.sender]++;
 
         setNewWinner(msg.sender);
-        LandPurchasedEvent(kingdomKey, msg.sender);
+        LandPurchasedEvent(_key, msg.sender);
+    }
+
+    function calculatePrice(uint lastPrice) internal pure returns (uint price) {
+        uint jackpotComission = lastPrice * JACKPOT_COMMISSION_RATIO / 100;
+        uint teamComission = lastPrice * TEAM_COMMISSION_RATIO / 100;
+        uint optionPrice = lastPrice * KINGDOM_MULTIPLIER / 100;
+        uint calculatePrice = lastPrice + jackpotComission + teamComission + optionPrice;
+        return calculatePrice;
     }
 
     //
     //  User can call this function to generate new kingdoms (within the limits of available land)
     //
-    function createKingdom(address sender, string _key, string _title) public payable {
+    function createKingdom(string _key, string _title, uint8 _type, uint8 _tier) public payable {
 
-        require(msg.value >= STARTING_CLAIM_PRICE_WEI);
-        require(sender != address(0));
+        uint optionPrice = STARTING_CLAIM_PRICE_WEI * KINGDOM_MULTIPLIER / 100;
+        uint minimumPrice = STARTING_CLAIM_PRICE_WEI + optionPrice;
+
+        require(msg.value >= minimumPrice);
         require(kingdomsCreated[_key] == false);
         require(remainingKingdoms > 0);
 
         remainingKingdoms--;
 
-        uint nextPrice = msg.value + (msg.value * GLOBAL_JACKPOT_COMMISSION_RATIO / 100) + (msg.value * GLOBAL_TEAM_COMMISSION_RATIO / 100) + (msg.value * GLOBAL_COMPENSATION_RATIO / 100);
-        uint kingdomId = kingdoms.push(Kingdom(_title, _key, nextPrice, 0, 1, sender)) - 1;
+        uint price = minimumPrice + optionPrice;
+        uint nextBuyingPrice = calculatePrice(price);
+
+        uint kingdomId = kingdoms.push(Kingdom(_title, _key, _tier, _type, nextBuyingPrice, 0, 1, price, msg.sender)) - 1;
+        // kingdomOwner[kingdomId] = msg.sender;
+        
         kingdomsKeys[_key] = kingdomId;
         kingdomsCreated[_key] = true;
-        uint transactionId = kingdomTransactions.push(Transaction(_key, sender, msg.value, 0, 0, now)) - 1;
+
+        uint transactionId = kingdomTransactions.push(Transaction(_key, msg.sender, msg.value, 0)) - 1;
         kingdoms[kingdomId].lastTransaction = transactionId;
        
-        nbTransactions[sender]++;
-        nbKingdoms[sender]++;
+        nbTransactions[msg.sender]++;
+        nbKingdoms[msg.sender]++;
 
-        setNewWinner(sender);
-        LandCreatedEvent(_key, sender);
+        setNewWinner(msg.sender);
+        LandCreatedEvent(_key, msg.sender);
     }
 
     //
@@ -172,10 +214,9 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
     //
     //  Send transaction to compensate the previous owner
     //
-    function compensateLatestMonarch(string kingdomKey, uint compensationWei) internal {
-        Kingdom storage kingdom = kingdoms[kingdomsKeys[kingdomKey]];
-        address compensationAddress = kingdomTransactions[kingdom.lastTransaction].compensationAddress;
-        kingdomTransactions[kingdom.lastTransaction].compensation = compensationWei;
+    function compensateLatestMonarch(uint lastTransaction, uint compensationWei) internal {
+        address compensationAddress = kingdomTransactions[lastTransaction].compensationAddress;
+        kingdomTransactions[lastTransaction].compensation = compensationWei;
         asyncSend(compensationAddress, compensationWei);
     }
 
@@ -197,57 +238,62 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
     //
     //  After time expiration, owner can call this function to activate the next round of the game
     //
-    function sendJackpot() public onlyOwner() {
+    function sendGlobalJackpot() public onlyOwner() {
         require(kingdoms.length > 0);
-        uint payment = jackpot;
+        uint payment = globalJackpot.balance;
 
         require(payment != 0);
         require(this.balance >= payment);
-        require(winner != address(0));
+        require(globalJackpot.owner != address(0));
 
-        jackpot = 0;
-        endTime = now + 7 days;
+        globalJackpot.balance = 0;
+        globalJackpot.endTime = now + 7 days;
         remainingKingdoms += 3;
         round++;
 
-        assert(winner.send(payment));
+        asyncSend(globalJackpot.owner, payment);
     }
 
     // GETTER AND SETTER FUNCTIONS
 
     function setNewWinner(address sender) internal {
-        if (winner == address(0)) {
-            winner = sender;
+        if (globalJackpot.owner == address(0)) {
+            globalJackpot.owner = sender;
         } else {
-            if (nbKingdoms[sender] == nbKingdoms[winner]) {
-                if (nbTransactions[sender] > nbTransactions[winner]) {
-                    winner = sender;
+            if (nbKingdoms[sender] == nbKingdoms[globalJackpot.owner]) {
+                if (nbTransactions[sender] > nbTransactions[globalJackpot.owner]) {
+                    globalJackpot.owner = sender;
                 }
-            } else if (nbKingdoms[sender] > nbKingdoms[winner]) {
-                winner = sender;
+            } else if (nbKingdoms[sender] > nbKingdoms[globalJackpot.owner]) {
+                globalJackpot.owner = sender;
             }
         }
     }
 
     function isFinalized() public view returns (bool) {
-        return now >= endTime;
+        return now >= globalJackpot.endTime;
     }
 
     function getKingdomsNumberByAddress(address addr) public view returns (uint nb) {
         return nbKingdoms[addr];
     }
 
-    function getCurrentOwner(uint kingdomId) public view returns (address addr) {
-        return kingdoms[kingdomId].currentOwner;
+    function getCurrentOwner(string key) public view returns (address addr) {
+        return kingdoms[kingdomsKeys[key]].owner;
     }
 
     function getKingdomCount() public view returns (uint kingdomCount) {
         return kingdoms.length;
     }
 
+    function getKingdomIndex(string key) public view returns (uint index) {
+        return kingdomsKeys[key];
+    }
+
     function getKingdomInformations(string kingdomKey) public view returns (string title, uint currentPrice, uint lastTransaction, uint transactionCount, address currentOwner) {
-        Kingdom storage kingdom = kingdoms[kingdomsKeys[kingdomKey]];
-        return (kingdom.title, kingdom.currentPrice, kingdom.lastTransaction, kingdom.transactionCount, kingdom.currentOwner);
+        uint kingdomId = kingdomsKeys[kingdomKey];
+        Kingdom storage kingdom = kingdoms[kingdomId];
+        return (kingdom.title, kingdom.currentPrice, kingdom.lastTransaction, kingdom.transactionCount, kingdom.owner);
     }
 
 }
