@@ -16,6 +16,9 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
         address compensationAddress;
         uint buyingPrice;
         uint compensation;
+        uint tier;
+        // uint jackpotContribution;
+        // uint date;
     }
 
     struct Kingdom {
@@ -43,6 +46,8 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
     mapping(string => bool) kingdomsCreated;
     mapping(address => uint) nbKingdoms;
     mapping(address => uint) public nbTransactions;
+    // mapping(uint => address) public localJackpotsWinners;
+    // mapping(uint => address) public localJackpotsMaxKingdoms;
 
     Jackpot[] public jackpots;
     Jackpot public globalJackpot;
@@ -53,11 +58,10 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
     uint public round;
 
     uint constant public STARTING_CLAIM_PRICE_WEI = 0.00133 ether;
-    uint constant MAXIMUM_CLAIM_PRICE_WEI = 1000 ether;
+    uint constant MAXIMUM_CLAIM_PRICE_WEI = 300 ether;
     uint constant KINGDOM_MULTIPLIER = 20;
     uint constant TEAM_COMMISSION_RATIO = 10;
     uint constant JACKPOT_COMMISSION_RATIO = 10;
-
 
     // MODIFIERS
 
@@ -73,6 +77,11 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
 
     modifier checkMaxPrice() {
         require (msg.value <= MAXIMUM_CLAIM_PRICE_WEI);
+        _;
+    }
+
+    modifier onlyKingdomOwner(string _key, address _sender) {
+        require (kingdoms[kingdomsKeys[_key]].owner == _sender);
         _;
     }
     
@@ -99,18 +108,6 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
 
     function () { }
 
-    function getMinimumPrice(string kingdomKey, uint kingdomType) public view returns (uint nextPrice) {
-        uint kingdomId = kingdomsKeys[kingdomKey];
-        Kingdom storage kingdom = kingdoms[kingdomId];
-
-        uint optionPrice = kingdom.lastPrice * kingdomType * KINGDOM_MULTIPLIER / 100;
-        uint jackpotCommission = kingdom.lastPrice * JACKPOT_COMMISSION_RATIO / 100;
-        uint teamCommission = kingdom.lastPrice * TEAM_COMMISSION_RATIO / 100;
-
-        uint price = kingdom.lastPrice + jackpotCommission + teamCommission + optionPrice;
-        return price;
-    }
-
     //
     //  This is the main function. It is called to buy a kingdom
     //
@@ -124,14 +121,14 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
         uint kingdomId = kingdomsKeys[_key];
         Kingdom storage kingdom = kingdoms[kingdomId];
 
-        uint optionPrice = kingdom.lastPrice * _tier * KINGDOM_MULTIPLIER / 100;
-        uint jackpotCommission = kingdom.lastPrice * JACKPOT_COMMISSION_RATIO / 100;
-        uint teamCommission = kingdom.lastPrice * TEAM_COMMISSION_RATIO / 100;
+        uint bet = (kingdom.lastPrice.mul(KINGDOM_MULTIPLIER).div(100)).mul(_tier);
+        uint jackpotCommission = kingdom.lastPrice.mul(JACKPOT_COMMISSION_RATIO).div(100);
+        uint teamCommission = kingdom.lastPrice.mul(TEAM_COMMISSION_RATIO).div(100);
 
-        uint price = kingdom.lastPrice + jackpotCommission + teamCommission + optionPrice;
+        uint price = kingdom.lastPrice.add(jackpotCommission).add(teamCommission).add(bet);
         require (msg.value >= price);
 
-        uint currentPrice = price + optionPrice;
+        uint currentPrice = price.add(bet);
 
         if (teamCommission != 0) {
             recordCommissionEarned(teamCommission);
@@ -143,14 +140,26 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
         
         globalJackpot.balance = globalJackpot.balance.add(jackpotCommission.mul(90).div(100));
 
+        // uint localJackpotCommission = jackpotCommission.mul(0.1);
+        // if (_type == 1) {
+        //     localJackpot1 = localJackpot1 + localJackpotCommission;
+        // } else if (_type == 2) {
+        //     localJackpot2 = localJackpot2 + localJackpotCommission;
+        // } else if (_type == 3) {
+        //     localJackpot3 = localJackpot3 + localJackpotCommission;
+        // } else {
+        //     localJackpot4 = localJackpot4 + localJackpotCommission;
+        // }
+
         kingdom.kingdomType = _type;
         kingdom.kingdomTier = _tier;
         kingdom.title = _title;
         kingdom.lastPrice = currentPrice;
-        kingdom.currentPrice = calculatePrice(currentPrice);
+        kingdom.currentPrice = calculatePrice(currentPrice, _tier);
         kingdom.owner = msg.sender;
+        // kingdomOwner[kingdomId] = msg.sender;
 
-        uint transactionId = kingdomTransactions.push(Transaction("", msg.sender, msg.value, 0)) - 1;
+        uint transactionId = kingdomTransactions.push(Transaction("", msg.sender, msg.value, 0, _tier)) - 1;
         kingdomTransactions[transactionId].kingdomKey = _key;
         
         kingdom.transactionCount++;
@@ -163,12 +172,24 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
         LandPurchasedEvent(_key, msg.sender);
     }
 
-    function calculatePrice(uint lastPrice) internal pure returns (uint price) {
-        uint jackpotComission = lastPrice * JACKPOT_COMMISSION_RATIO / 100;
-        uint teamComission = lastPrice * TEAM_COMMISSION_RATIO / 100;
-        uint optionPrice = lastPrice * KINGDOM_MULTIPLIER / 100;
-        uint calculatePrice = lastPrice + jackpotComission + teamComission + optionPrice;
+    function calculatePrice(uint _lastPrice, uint _tier) internal pure returns (uint price) {
+        uint jackpotComission = _lastPrice.mul(JACKPOT_COMMISSION_RATIO).div(100);
+        uint teamComission = _lastPrice.mul(TEAM_COMMISSION_RATIO).div(100);
+        uint bet = (_lastPrice.mul(KINGDOM_MULTIPLIER).div(100)).mul(_tier);
+        uint calculatePrice = _lastPrice.add(jackpotComission).add(teamComission).add(bet);
         return calculatePrice;
+    }
+
+    function upgradeKingdomTier(string _key, uint8 _tier) public payable  checkKingdomExistence(_key) onlyKingdomOwner(_key, msg.sender) {
+        require(msg.value >= 0.05 ether);
+        require(_tier > 0);
+        kingdoms[kingdomsKeys[_key]].kingdomTier = _tier;
+    }
+
+    function upgradeKingdomType(string _key, uint8 _type) public payable  checkKingdomExistence(_key) onlyKingdomOwner(_key, msg.sender) {
+        require(msg.value >= 0.05 ether);
+        require(_type > 0);
+        kingdoms[kingdomsKeys[_key]].kingdomType = _type;
     }
 
     //
@@ -176,8 +197,11 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
     //
     function createKingdom(string _key, string _title, uint8 _type, uint8 _tier) public payable {
 
-        uint optionPrice = STARTING_CLAIM_PRICE_WEI * KINGDOM_MULTIPLIER / 100;
-        uint minimumPrice = STARTING_CLAIM_PRICE_WEI + optionPrice;
+        require(_type > 0);
+        require(_tier > 0);
+
+        uint bet = (STARTING_CLAIM_PRICE_WEI.mul(KINGDOM_MULTIPLIER).div(100)).mul(_tier);
+        uint minimumPrice = STARTING_CLAIM_PRICE_WEI.add(bet);
 
         require(msg.value >= minimumPrice);
         require(kingdomsCreated[_key] == false);
@@ -185,8 +209,8 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
 
         remainingKingdoms--;
 
-        uint price = minimumPrice + optionPrice;
-        uint nextBuyingPrice = calculatePrice(price);
+        uint price = minimumPrice.add(bet);
+        uint nextBuyingPrice = calculatePrice(price, _tier);
 
         uint kingdomId = kingdoms.push(Kingdom(_title, _key, _tier, _type, nextBuyingPrice, 0, 1, price, msg.sender)) - 1;
         // kingdomOwner[kingdomId] = msg.sender;
@@ -194,7 +218,7 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
         kingdomsKeys[_key] = kingdomId;
         kingdomsCreated[_key] = true;
 
-        uint transactionId = kingdomTransactions.push(Transaction(_key, msg.sender, msg.value, 0)) - 1;
+        uint transactionId = kingdomTransactions.push(Transaction(_key, msg.sender, msg.value, 0, _tier)) - 1;
         kingdoms[kingdomId].lastTransaction = transactionId;
        
         nbTransactions[msg.sender]++;
