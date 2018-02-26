@@ -8,7 +8,7 @@ import "zeppelin-solidity/contracts/math/SafeMath.sol";
 
 contract Map is PullPayment, Destructible, ReentrancyGuard {
     using SafeMath for uint256;
-
+    
     // STRUCTS
 
     struct Transaction {
@@ -24,8 +24,8 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
     struct Kingdom {
         string title;
         string key;
-        uint8 kingdomTier;
-        uint8 kingdomType;
+        uint kingdomTier;
+        uint kingdomType;
         uint currentPrice;
         uint lastTransaction;
         uint transactionCount;
@@ -40,8 +40,6 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
         uint nbKingdoms;
     }
 
-    uint remainingKingdoms;
-
     mapping(string => uint) kingdomsKeys;
     mapping(string => bool) kingdomsCreated;
     mapping(address => uint) nbKingdoms;
@@ -49,9 +47,9 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
     // mapping(uint => address) public localJackpotsWinners;
     // mapping(uint => address) public localJackpotsMaxKingdoms;
 
+    uint public remainingKingdoms;
     Jackpot[] public jackpots;
     Jackpot public globalJackpot;
-
     address public bookerAddress;
     Kingdom[] public kingdoms;
     Transaction[] public kingdomTransactions;
@@ -111,7 +109,7 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
     //
     //  This is the main function. It is called to buy a kingdom
     //
-    function purchaseKingdom(string _key, string _title, uint8 _type,  uint8 _tier) public 
+    function purchaseKingdom(string _key, string _title, uint _type,  uint _tier) public 
     payable 
     nonReentrant()
     checkMaxPrice()
@@ -180,13 +178,13 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
         return calculatePrice;
     }
 
-    function upgradeKingdomTier(string _key, uint8 _tier) public payable  checkKingdomExistence(_key) onlyKingdomOwner(_key, msg.sender) {
+    function upgradeKingdomTier(string _key, uint _tier) public payable  checkKingdomExistence(_key) onlyKingdomOwner(_key, msg.sender) {
         require(msg.value >= 0.05 ether);
         require(_tier > 0);
         kingdoms[kingdomsKeys[_key]].kingdomTier = _tier;
     }
 
-    function upgradeKingdomType(string _key, uint8 _type) public payable  checkKingdomExistence(_key) onlyKingdomOwner(_key, msg.sender) {
+    function upgradeKingdomType(string _key, uint _type) public payable  checkKingdomExistence(_key) onlyKingdomOwner(_key, msg.sender) {
         require(msg.value >= 0.05 ether);
         require(_type > 0);
         kingdoms[kingdomsKeys[_key]].kingdomType = _type;
@@ -195,7 +193,7 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
     //
     //  User can call this function to generate new kingdoms (within the limits of available land)
     //
-    function createKingdom(string _key, string _title, uint8 _type, uint8 _tier) public payable {
+    function createKingdom(string _key, string _title, uint _type, uint _tier) public payable {
 
         require(_type > 0);
         require(_tier > 0);
@@ -213,8 +211,6 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
         uint nextBuyingPrice = calculatePrice(price, _tier);
 
         uint kingdomId = kingdoms.push(Kingdom(_title, _key, _tier, _type, nextBuyingPrice, 0, 1, price, msg.sender)) - 1;
-        // kingdomOwner[kingdomId] = msg.sender;
-        
         kingdomsKeys[_key] = kingdomId;
         kingdomsCreated[_key] = true;
 
