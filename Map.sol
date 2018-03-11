@@ -17,8 +17,7 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
         uint buyingPrice;
         uint compensation;
         uint tier;
-        // uint jackpotContribution;
-        // uint date;
+        uint jackpotContribution;
     }
 
     struct Kingdom {
@@ -26,29 +25,38 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
         string key;
         uint kingdomTier;
         uint kingdomType;
-        uint currentPrice;
+        uint minimumPrice;
         uint lastTransaction;
         uint transactionCount;
-        uint lastPrice;
+        uint returnPrice;
         address owner;
     }
 
     struct Jackpot {
-        address owner;
+        address winner;
         uint balance;
-        uint endTime;
-        uint nbKingdoms;
     }
 
     mapping(string => uint) kingdomsKeys;
     mapping(string => bool) kingdomsCreated;
     mapping(address => uint) nbKingdoms;
     mapping(address => uint) public nbTransactions;
-    // mapping(uint => address) public localJackpotsWinners;
-    // mapping(uint => address) public localJackpotsMaxKingdoms;
+    mapping(uint => uint) public winnerCapByType;
 
+    Jackpot public jackpot1;
+    Jackpot public jackpot2;
+    Jackpot public jackpot3;
+    Jackpot public jackpot4;
+    Jackpot public jackpot5;
+
+    mapping(address => uint) public nbKingdomsType1;
+    mapping(address => uint) public nbKingdomsType2;
+    mapping(address => uint) public nbKingdomsType3;
+    mapping(address => uint) public nbKingdomsType4;
+    mapping(address => uint) public nbKingdomsType5;
+
+    uint public endTime;
     uint public remainingKingdoms;
-    Jackpot[] public jackpots;
     Jackpot public globalJackpot;
     address public bookerAddress;
     Kingdom[] public kingdoms;
@@ -73,6 +81,11 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
         _;
     }
 
+    modifier checkIsClosed() {
+        require(isFinalized());
+        _;
+    }
+
     modifier checkMaxPrice() {
         require (msg.value <= MAXIMUM_CLAIM_PRICE_WEI);
         _;
@@ -93,18 +106,55 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
     //
     function Map(address _bookerAddress, uint _remainingKingdoms) {
         bookerAddress = _bookerAddress;
-        globalJackpot.endTime = now + 7 days;
         remainingKingdoms = _remainingKingdoms;
 
-        jackpots.push(Jackpot(address(0), 0, now + 7 days, 0));
-        jackpots.push(Jackpot(address(0), 0, now + 7 days, 0));
-        jackpots.push(Jackpot(address(0), 0, now + 7 days, 0));
-        jackpots.push(Jackpot(address(0), 0, now + 7 days, 0));
+        jackpot1 = Jackpot(address(0), 0);
+        jackpot2 = Jackpot(address(0), 0);
+        jackpot3 = Jackpot(address(0), 0);
+        jackpot4 = Jackpot(address(0), 0);
+        jackpot5 = Jackpot(address(0), 0);
 
-        globalJackpot = Jackpot(address(0), 0, now + 7 days, 0);
+        endTime = now + 7 days;
+        globalJackpot = Jackpot(address(0), 0);
     }
 
     function () { }
+
+    // function getMinimumPrice(string _key, uint _tier) public view returns (uint nextPrice) {
+    //     uint kingdomId = kingdomsKeys[_key];
+    //     Kingdom storage kingdom = kingdoms[kingdomId];
+
+    //     uint bet = (kingdom.returnPrice.mul(KINGDOM_MULTIPLIER).div(100)).mul(_tier);
+    //     uint jackpotCommission = kingdom.returnPrice * JACKPOT_COMMISSION_RATIO / 100;
+    //     uint teamCommission = kingdom.returnPrice * TEAM_COMMISSION_RATIO / 100;
+
+    //     uint price = kingdom.returnPrice + jackpotCommission + teamCommission + bet;
+    //     return price;
+    // }
+
+    function setTypedJackpotWinner(address _user, uint _type, uint _value) internal {
+        if (_type == 1) {
+            if (nbKingdomsType1[_user] >= winnerCapByType[_type]) {
+                jackpot1.winner = _user;
+            }
+        } else if (_type == 2) {
+            if (nbKingdomsType2[_user] >= winnerCapByType[_type]) {
+                jackpot2.winner = _user;
+            }
+        } else if (_type == 3) {
+            if (nbKingdomsType3[_user] >= winnerCapByType[_type]) {
+                jackpot3.winner = _user;
+            }
+        } else if (_type == 4) {
+            if (nbKingdomsType4[_user] >= winnerCapByType[_type]) {
+                jackpot4.winner = _user;
+            }
+        } else if (_type == 5) {
+            if (nbKingdomsType5[_user] >= winnerCapByType[_type]) {
+                jackpot5.winner = _user;
+            }
+        }
+    }
 
     //
     //  This is the main function. It is called to buy a kingdom
@@ -119,45 +169,50 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
         uint kingdomId = kingdomsKeys[_key];
         Kingdom storage kingdom = kingdoms[kingdomId];
 
-        uint bet = (kingdom.lastPrice.mul(KINGDOM_MULTIPLIER).div(100)).mul(_tier);
-        uint jackpotCommission = kingdom.lastPrice.mul(JACKPOT_COMMISSION_RATIO).div(100);
-        uint teamCommission = kingdom.lastPrice.mul(TEAM_COMMISSION_RATIO).div(100);
+        uint bet = (kingdom.returnPrice.mul(KINGDOM_MULTIPLIER).div(100)).mul(_tier);
+        uint jackpotCommission = kingdom.returnPrice.mul(JACKPOT_COMMISSION_RATIO).div(100);
+        uint teamCommission = kingdom.returnPrice.mul(TEAM_COMMISSION_RATIO).div(100);
 
-        uint price = kingdom.lastPrice.add(jackpotCommission).add(teamCommission).add(bet);
+        uint price = kingdom.returnPrice.add(jackpotCommission).add(teamCommission).add(bet);
         require (msg.value >= price);
 
-        uint currentPrice = price.add(bet);
+        uint minimumPrice = price.add(bet);
 
         if (teamCommission != 0) {
             recordCommissionEarned(teamCommission);
         }
 
-        if (kingdom.lastPrice > 0) {
-            compensateLatestMonarch(kingdom.lastTransaction, kingdom.lastPrice);
+        if (kingdom.returnPrice > 0) {
+            nbKingdoms[kingdom.owner]--;
+            
+            if (kingdom.kingdomType == 1) {
+                nbKingdomsType1[kingdom.owner]--;
+            } else if (kingdom.kingdomType == 2) {
+                nbKingdomsType2[kingdom.owner]--;
+            } else if (kingdom.kingdomType == 3) {
+                nbKingdomsType3[kingdom.owner]--;
+            } else if (kingdom.kingdomType == 4) {
+                nbKingdomsType4[kingdom.owner]--;
+            } else if (kingdom.kingdomType == 5) {
+                nbKingdomsType5[kingdom.owner]--;
+            }
+            
+            compensateLatestMonarch(kingdom.lastTransaction, kingdom.returnPrice);
         }
         
-        globalJackpot.balance = globalJackpot.balance.add(jackpotCommission.mul(90).div(100));
-
-        // uint localJackpotCommission = jackpotCommission.mul(0.1);
-        // if (_type == 1) {
-        //     localJackpot1 = localJackpot1 + localJackpotCommission;
-        // } else if (_type == 2) {
-        //     localJackpot2 = localJackpot2 + localJackpotCommission;
-        // } else if (_type == 3) {
-        //     localJackpot3 = localJackpot3 + localJackpotCommission;
-        // } else {
-        //     localJackpot4 = localJackpot4 + localJackpotCommission;
-        // }
+        uint jackpotSplitted = jackpotCommission.mul(50).div(100);
+        globalJackpot.balance = globalJackpot.balance.add(jackpotSplitted);
 
         kingdom.kingdomType = _type;
         kingdom.kingdomTier = _tier;
         kingdom.title = _title;
-        kingdom.lastPrice = currentPrice;
-        kingdom.currentPrice = calculatePrice(currentPrice, _tier);
+        kingdom.returnPrice = minimumPrice;
+        kingdom.minimumPrice = calculatePrice(minimumPrice, 1);
         kingdom.owner = msg.sender;
-        // kingdomOwner[kingdomId] = msg.sender;
 
-        uint transactionId = kingdomTransactions.push(Transaction("", msg.sender, msg.value, 0, _tier)) - 1;
+        uint transactionId = kingdomTransactions.push(Transaction("", msg.sender, msg.value, 0, 0, 0)) - 1;
+        kingdomTransactions[transactionId].tier = _tier;
+        kingdomTransactions[transactionId].jackpotContribution = jackpotSplitted;
         kingdomTransactions[transactionId].kingdomKey = _key;
         
         kingdom.transactionCount++;
@@ -165,16 +220,33 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
 
         nbTransactions[msg.sender]++;
         nbKingdoms[msg.sender]++;
+        
+        if (_type == 1) {
+            nbKingdomsType1[msg.sender]++;
+            jackpot1.balance = jackpot1.balance.add(jackpotSplitted);
+        } else if (_type == 2) {
+            nbKingdomsType2[msg.sender]++;
+            jackpot2.balance = jackpot2.balance.add(jackpotSplitted);
+        } else if (_type == 3) {
+            nbKingdomsType3[msg.sender]++;
+            jackpot3.balance = jackpot3.balance.add(jackpotSplitted);
+        } else if (_type == 4) {
+            nbKingdomsType4[msg.sender]++;
+            jackpot4.balance = jackpot4.balance.add(jackpotSplitted);
+        } else if (_type == 5) {
+            nbKingdomsType5[msg.sender]++;
+            jackpot5.balance = jackpot5.balance.add(jackpotSplitted);
+        }
 
-        setNewWinner(msg.sender);
+        setNewWinner(msg.sender, _type, jackpotSplitted);
         LandPurchasedEvent(_key, msg.sender);
     }
 
-    function calculatePrice(uint _lastPrice, uint _tier) internal pure returns (uint price) {
-        uint jackpotComission = _lastPrice.mul(JACKPOT_COMMISSION_RATIO).div(100);
-        uint teamComission = _lastPrice.mul(TEAM_COMMISSION_RATIO).div(100);
-        uint bet = (_lastPrice.mul(KINGDOM_MULTIPLIER).div(100)).mul(_tier);
-        uint calculatePrice = _lastPrice.add(jackpotComission).add(teamComission).add(bet);
+    function calculatePrice(uint _returnPrice, uint _tier) internal pure returns (uint price) {
+        uint jackpotComission = _returnPrice.mul(JACKPOT_COMMISSION_RATIO).div(100);
+        uint teamComission = _returnPrice.mul(TEAM_COMMISSION_RATIO).div(100);
+        uint bet = (_returnPrice.mul(KINGDOM_MULTIPLIER).div(100)).mul(_tier);
+        uint calculatePrice = _returnPrice.add(jackpotComission).add(teamComission).add(bet);
         return calculatePrice;
     }
 
@@ -207,20 +279,35 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
 
         remainingKingdoms--;
 
-        uint price = minimumPrice.add(bet);
-        uint nextBuyingPrice = calculatePrice(price, _tier);
+        uint returnPrice = minimumPrice.add(bet);
+        uint nextMinimumPrice = calculatePrice(returnPrice, 1);
 
-        uint kingdomId = kingdoms.push(Kingdom(_title, _key, _tier, _type, nextBuyingPrice, 0, 1, price, msg.sender)) - 1;
+        uint kingdomId = kingdoms.push(Kingdom(_title, _key, _tier, _type, nextMinimumPrice, 0, 1, returnPrice, msg.sender)) - 1;
         kingdomsKeys[_key] = kingdomId;
         kingdomsCreated[_key] = true;
 
-        uint transactionId = kingdomTransactions.push(Transaction(_key, msg.sender, msg.value, 0, _tier)) - 1;
+        uint transactionId = kingdomTransactions.push(Transaction(_key, msg.sender, msg.value, 0, 0, 0)) - 1;
+        kingdomTransactions[transactionId].tier = _tier;
         kingdoms[kingdomId].lastTransaction = transactionId;
        
         nbTransactions[msg.sender]++;
         nbKingdoms[msg.sender]++;
+        
+        if (_type == 1) {
+            nbKingdomsType1[msg.sender]++;
+        } else if (_type == 2) {
+            nbKingdomsType2[msg.sender]++;
+        } else if (_type == 3) {
+            nbKingdomsType3[msg.sender]++;
+        } else if (_type == 4) {
+            nbKingdomsType4[msg.sender]++;
+        } else if (_type == 5) {
+            nbKingdomsType5[msg.sender]++;
+        }
 
-        setNewWinner(msg.sender);
+        setNewWinner(msg.sender, _type, 0);
+        winnerCapByType[_type]++;
+
         LandCreatedEvent(_key, msg.sender);
     }
 
@@ -258,40 +345,75 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
     //
     //  After time expiration, owner can call this function to activate the next round of the game
     //
-    function sendGlobalJackpot() public onlyOwner() {
-        require(kingdoms.length > 0);
-        uint payment = globalJackpot.balance;
+    function activateNextRound() public onlyOwner() checkIsClosed() {
 
-        require(payment != 0);
-        require(this.balance >= payment);
-        require(globalJackpot.owner != address(0));
-
-        globalJackpot.balance = 0;
-        globalJackpot.endTime = now + 7 days;
+        endTime = now + 7 days;
         remainingKingdoms += 3;
         round++;
 
-        asyncSend(globalJackpot.owner, payment);
+        if (globalJackpot.winner != address(0) && globalJackpot.balance > 0) {
+            require(this.balance >= globalJackpot.balance);
+            asyncSend(globalJackpot.winner, globalJackpot.balance);
+            globalJackpot.winner = address(0);
+            globalJackpot.balance = 0;
+        }
+
+        if (jackpot1.winner != address(0) && jackpot1.balance > 0) {
+            require(this.balance >= jackpot1.balance);
+            asyncSend(jackpot1.winner, jackpot1.balance);
+            jackpot1.winner = address(0);
+            jackpot1.balance = 0;
+        }
+
+        if (jackpot2.winner != address(0) && jackpot2.balance > 0) {
+            require(this.balance >= jackpot2.balance);
+            asyncSend(jackpot2.winner, jackpot2.balance);
+            jackpot2.winner = address(0);
+            jackpot2.balance = 0;
+        }
+
+        if (jackpot3.winner != address(0) && jackpot3.balance > 0) {
+            require(this.balance >= jackpot3.balance);
+            asyncSend(jackpot3.winner, jackpot3.balance);
+            jackpot3.winner = address(0);
+            jackpot3.balance = 0;
+        }
+
+        if (jackpot4.winner != address(0) && jackpot4.balance > 0) {
+            require(this.balance >= jackpot4.balance);
+            asyncSend(jackpot4.winner, jackpot4.balance);
+            jackpot4.winner = address(0);
+            jackpot4.balance = 0;
+        }
+
+        if (jackpot5.winner != address(0) && jackpot5.balance > 0) {
+            require(this.balance >= jackpot5.balance);
+            asyncSend(jackpot5.winner, jackpot5.balance);
+            jackpot5.winner = address(0);
+            jackpot5.balance = 0;
+        }
     }
 
     // GETTER AND SETTER FUNCTIONS
 
-    function setNewWinner(address sender) internal {
-        if (globalJackpot.owner == address(0)) {
-            globalJackpot.owner = sender;
+    function setNewWinner(address _sender, uint _type, uint _jackpot) internal {
+        if (globalJackpot.winner == address(0)) {
+            globalJackpot.winner = _sender;
         } else {
-            if (nbKingdoms[sender] == nbKingdoms[globalJackpot.owner]) {
-                if (nbTransactions[sender] > nbTransactions[globalJackpot.owner]) {
-                    globalJackpot.owner = sender;
+            if (nbKingdoms[_sender] == nbKingdoms[globalJackpot.winner]) {
+                if (nbTransactions[_sender] > nbTransactions[globalJackpot.winner]) {
+                    globalJackpot.winner = _sender;
                 }
-            } else if (nbKingdoms[sender] > nbKingdoms[globalJackpot.owner]) {
-                globalJackpot.owner = sender;
+            } else if (nbKingdoms[_sender] > nbKingdoms[globalJackpot.winner]) {
+                globalJackpot.winner = _sender;
             }
         }
+
+        setTypedJackpotWinner(_sender, _type, _jackpot);
     }
 
     function isFinalized() public view returns (bool) {
-        return now >= globalJackpot.endTime;
+        return now >= endTime;
     }
 
     function getKingdomsNumberByAddress(address addr) public view returns (uint nb) {
@@ -310,10 +432,10 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
         return kingdomsKeys[key];
     }
 
-    function getKingdomInformations(string kingdomKey) public view returns (string title, uint currentPrice, uint lastTransaction, uint transactionCount, address currentOwner) {
+    function getKingdomInformations(string kingdomKey) public view returns (string title, uint minimumPrice, uint lastTransaction, uint transactionCount, address currentOwner) {
         uint kingdomId = kingdomsKeys[kingdomKey];
         Kingdom storage kingdom = kingdoms[kingdomId];
-        return (kingdom.title, kingdom.currentPrice, kingdom.lastTransaction, kingdom.transactionCount, kingdom.owner);
+        return (kingdom.title, kingdom.minimumPrice, kingdom.lastTransaction, kingdom.transactionCount, kingdom.owner);
     }
 
 }
