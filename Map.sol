@@ -1,10 +1,82 @@
-pragma solidity ^0.4.15;
+pragma solidity ^0.4.18;
 
-import 'zeppelin-solidity/contracts/ownership/Ownable.sol';
-import 'zeppelin-solidity/contracts/payment/PullPayment.sol';
-import 'zeppelin-solidity/contracts/lifecycle/Destructible.sol';
-import 'zeppelin-solidity/contracts/ReentrancyGuard.sol';
-import "zeppelin-solidity/contracts/math/SafeMath.sol";
+library SafeMath {
+  function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+    if (a == 0) { return 0; }
+    uint256 c = a * b;
+    assert(c / a == b);
+    return c;
+  }
+  function div(uint256 a, uint256 b) internal pure returns (uint256) {
+    uint256 c = a / b;
+    return c;
+  }
+  function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+    assert(b <= a);
+    return a - b;
+  }
+  function add(uint256 a, uint256 b) internal pure returns (uint256) {
+    uint256 c = a + b;
+    assert(c >= a);
+    return c;
+  }
+}
+
+contract PullPayment {
+  using SafeMath for uint256;
+  mapping(address => uint256) public payments;
+  uint256 public totalPayments;
+  function withdrawPayments() public {
+    address payee = msg.sender;
+    uint256 payment = payments[payee];
+    require(payment != 0);
+    require(this.balance >= payment);
+    totalPayments = totalPayments.sub(payment);
+    payments[payee] = 0;
+    assert(payee.send(payment));
+  }
+  function asyncSend(address dest, uint256 amount) internal {
+    payments[dest] = payments[dest].add(amount);
+    totalPayments = totalPayments.add(amount);
+  }
+}
+
+contract Ownable {
+  address public owner;
+  event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+  function Ownable() public {
+    owner = msg.sender;
+  }
+  modifier onlyOwner() {
+    require(msg.sender == owner);
+    _;
+  }
+  function transferOwnership(address newOwner) public onlyOwner {
+    require(newOwner != address(0));
+    OwnershipTransferred(owner, newOwner);
+    owner = newOwner;
+  }
+}
+
+contract Destructible is Ownable {
+  function Destructible() public payable { }
+  function destroy() onlyOwner public {
+    selfdestruct(owner);
+  }
+  function destroyAndSend(address _recipient) onlyOwner public {
+    selfdestruct(_recipient);
+  }
+}
+
+contract ReentrancyGuard {
+  bool private reentrancy_lock = false;
+  modifier nonReentrant() {
+    require(!reentrancy_lock);
+    reentrancy_lock = true;
+    _;
+    reentrancy_lock = false;
+  }
+}
 
 contract Map is PullPayment, Destructible, ReentrancyGuard {
     using SafeMath for uint256;
@@ -16,7 +88,6 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
         address compensationAddress;
         uint buyingPrice;
         uint compensation;
-        uint tier;
         uint jackpotContribution;
     }
 
@@ -25,11 +96,12 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
         string key;
         uint kingdomTier;
         uint kingdomType;
-        uint minimumPrice;
+        uint minimumPrice; 
         uint lastTransaction;
         uint transactionCount;
         uint returnPrice;
         address owner;
+        bool locked;
     }
 
     struct Jackpot {
@@ -37,62 +109,68 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
         uint balance;
     }
 
-    mapping(string => uint) kingdomsKeys;
-    mapping(string => bool) kingdomsCreated;
-    mapping(address => uint) nbKingdoms;
-    mapping(address => uint) public nbTransactions;
-    mapping(uint => uint) public winnerCapByType;
+    struct Round {
+        Jackpot globalJackpot;
+        Jackpot jackpot1;
+        Jackpot jackpot2;
+        Jackpot jackpot3;
+        Jackpot jackpot4;
+        Jackpot jackpot5;
 
-    Jackpot public jackpot1;
-    Jackpot public jackpot2;
-    Jackpot public jackpot3;
-    Jackpot public jackpot4;
-    Jackpot public jackpot5;
+        mapping(string => bool) kingdomsCreated;
+        mapping(address => uint) nbKingdoms;
+        mapping(address => uint) nbTransactions;
+        mapping(address => uint) nbKingdomsType1;
+        mapping(address => uint) nbKingdomsType2;
+        mapping(address => uint) nbKingdomsType3;
+        mapping(address => uint) nbKingdomsType4;
+        mapping(address => uint) nbKingdomsType5;
 
-    mapping(address => uint) public nbKingdomsType1;
-    mapping(address => uint) public nbKingdomsType2;
-    mapping(address => uint) public nbKingdomsType3;
-    mapping(address => uint) public nbKingdomsType4;
-    mapping(address => uint) public nbKingdomsType5;
+        uint startTime;
+        uint endTime;
 
-    uint public endTime;
-    uint public remainingKingdoms;
-    Jackpot public globalJackpot;
-    address public bookerAddress;
+        mapping(string => uint) kingdomsKeys;
+    }
+
     Kingdom[] public kingdoms;
     Transaction[] public kingdomTransactions;
-    uint public round;
+    uint public currentRound;
+    address public bookerAddress;
+    
+    mapping(uint => Round) rounds;
 
-    uint constant public STARTING_CLAIM_PRICE_WEI = 0.00133 ether;
-    uint constant MAXIMUM_CLAIM_PRICE_WEI = 300 ether;
+    uint constant public ACTION_TAX = 0.02 ether;
+    uint constant public STARTING_CLAIM_PRICE_WEI = 0.05 ether;
+    uint constant MAXIMUM_CLAIM_PRICE_WEI = 800 ether;
     uint constant KINGDOM_MULTIPLIER = 20;
     uint constant TEAM_COMMISSION_RATIO = 10;
     uint constant JACKPOT_COMMISSION_RATIO = 10;
 
     // MODIFIERS
 
-    modifier checkKingdomExistence(string key) {
-        require(kingdomsCreated[key] == true);
+    modifier onlyForRemainingKingdoms() {
+        uint remainingKingdoms = getRemainingKingdoms();
+        require(remainingKingdoms > kingdoms.length);
         _;
     }
 
-    modifier checkIsOpen() {
-        require(!isFinalized());
+    modifier checkKingdomExistence(string key) {
+        require(rounds[currentRound].kingdomsCreated[key] == true);
+        _;
+    }
+
+    modifier checkIsNotLocked(string kingdomKey) {
+        require(kingdoms[rounds[currentRound].kingdomsKeys[kingdomKey]].locked != true);
         _;
     }
 
     modifier checkIsClosed() {
-        require(isFinalized());
-        _;
-    }
-
-    modifier checkMaxPrice() {
-        require (msg.value <= MAXIMUM_CLAIM_PRICE_WEI);
+        require(now >= rounds[currentRound].endTime);
         _;
     }
 
     modifier onlyKingdomOwner(string _key, address _sender) {
-        require (kingdoms[kingdomsKeys[_key]].owner == _sender);
+        require (kingdoms[rounds[currentRound].kingdomsKeys[_key]].owner == _sender);
         _;
     }
     
@@ -100,58 +178,69 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
 
     event LandCreatedEvent(string kingdomKey, address monarchAddress);
     event LandPurchasedEvent(string kingdomKey, address monarchAddress);
- 
+
     //
     //  CONTRACT CONSTRUCTOR
     //
-    function Map(address _bookerAddress, uint _remainingKingdoms) {
+    function Map(address _bookerAddress) {
         bookerAddress = _bookerAddress;
-        remainingKingdoms = _remainingKingdoms;
-
-        jackpot1 = Jackpot(address(0), 0);
-        jackpot2 = Jackpot(address(0), 0);
-        jackpot3 = Jackpot(address(0), 0);
-        jackpot4 = Jackpot(address(0), 0);
-        jackpot5 = Jackpot(address(0), 0);
-
-        endTime = now + 7 days;
-        globalJackpot = Jackpot(address(0), 0);
-    }
+        currentRound = 1;
+        rounds[currentRound] = Round(Jackpot(address(0), 0), Jackpot(address(0), 0), Jackpot(address(0), 0), Jackpot(address(0), 0), Jackpot(address(0), 0), Jackpot(address(0), 0), 0, 0);
+        rounds[currentRound].jackpot1 = Jackpot(address(0), 0);
+        rounds[currentRound].jackpot2 = Jackpot(address(0), 0);
+        rounds[currentRound].jackpot3 = Jackpot(address(0), 0);
+        rounds[currentRound].jackpot4 = Jackpot(address(0), 0);
+        rounds[currentRound].jackpot5 = Jackpot(address(0), 0);
+        rounds[currentRound].startTime = now;
+        rounds[currentRound].endTime = now + 7 days;
+        rounds[currentRound].globalJackpot = Jackpot(address(0), 0);
+     }
 
     function () { }
 
-    // function getMinimumPrice(string _key, uint _tier) public view returns (uint nextPrice) {
-    //     uint kingdomId = kingdomsKeys[_key];
-    //     Kingdom storage kingdom = kingdoms[kingdomId];
+    function getRemainingKingdoms() public view returns (uint nb) {
+        for (uint i = 1; i < 56; i++) {
+            if (now < rounds[currentRound].startTime + (i * 3 hours)) {
+                uint result = (5 * i);
+                if (result > 150) { 
+                    return 150; 
+                } else {
+                    return result;
+                }
+            }
+        }
+    }
 
-    //     uint bet = (kingdom.returnPrice.mul(KINGDOM_MULTIPLIER).div(100)).mul(_tier);
-    //     uint jackpotCommission = kingdom.returnPrice * JACKPOT_COMMISSION_RATIO / 100;
-    //     uint teamCommission = kingdom.returnPrice * TEAM_COMMISSION_RATIO / 100;
-
-    //     uint price = kingdom.returnPrice + jackpotCommission + teamCommission + bet;
-    //     return price;
-    // }
-
-    function setTypedJackpotWinner(address _user, uint _type, uint _value) internal {
+    function setTypedJackpotWinner(address _user, uint _type) internal {
         if (_type == 1) {
-            if (nbKingdomsType1[_user] >= winnerCapByType[_type]) {
-                jackpot1.winner = _user;
+            if (rounds[currentRound].jackpot1.winner == address(0)) {
+                rounds[currentRound].jackpot1.winner = _user;
+            } else if (rounds[currentRound].nbKingdomsType1[_user] >= rounds[currentRound].nbKingdomsType1[rounds[currentRound].jackpot1.winner]) {
+                rounds[currentRound].jackpot1.winner = _user;
             }
         } else if (_type == 2) {
-            if (nbKingdomsType2[_user] >= winnerCapByType[_type]) {
-                jackpot2.winner = _user;
+            if (rounds[currentRound].jackpot2.winner == address(0)) {
+                rounds[currentRound].jackpot2.winner = _user;
+            } else if (rounds[currentRound].nbKingdomsType2[_user] >= rounds[currentRound].nbKingdomsType2[rounds[currentRound].jackpot2.winner]) {
+                rounds[currentRound].jackpot2.winner = _user;
             }
         } else if (_type == 3) {
-            if (nbKingdomsType3[_user] >= winnerCapByType[_type]) {
-                jackpot3.winner = _user;
+            if (rounds[currentRound].jackpot3.winner == address(0)) {
+                rounds[currentRound].jackpot3.winner = _user;
+            } else if (rounds[currentRound].nbKingdomsType3[_user] >= rounds[currentRound].nbKingdomsType3[rounds[currentRound].jackpot3.winner]) {
+                rounds[currentRound].jackpot3.winner = _user;
             }
         } else if (_type == 4) {
-            if (nbKingdomsType4[_user] >= winnerCapByType[_type]) {
-                jackpot4.winner = _user;
+            if (rounds[currentRound].jackpot4.winner == address(0)) {
+                rounds[currentRound].jackpot4.winner = _user;
+            } else if (rounds[currentRound].nbKingdomsType4[_user] >= rounds[currentRound].nbKingdomsType4[rounds[currentRound].jackpot4.winner]) {
+                rounds[currentRound].jackpot4.winner = _user;
             }
         } else if (_type == 5) {
-            if (nbKingdomsType5[_user] >= winnerCapByType[_type]) {
-                jackpot5.winner = _user;
+            if (rounds[currentRound].jackpot5.winner == address(0)) {
+                rounds[currentRound].jackpot5.winner = _user;
+            } else if (rounds[currentRound].nbKingdomsType5[_user] >= rounds[currentRound].nbKingdomsType5[rounds[currentRound].jackpot5.winner]) {
+                rounds[currentRound].jackpot5.winner = _user;
             }
         }
     }
@@ -159,163 +248,128 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
     //
     //  This is the main function. It is called to buy a kingdom
     //
-    function purchaseKingdom(string _key, string _title, uint _type,  uint _tier) public 
+    function purchaseKingdom(string _key, string _title, bool _locked) public 
     payable 
     nonReentrant()
-    checkMaxPrice()
-    checkIsOpen()
     checkKingdomExistence(_key)
+    checkIsNotLocked(_key)
     {
-        uint kingdomId = kingdomsKeys[_key];
+        require(now < rounds[currentRound].endTime);
+        Round storage round = rounds[currentRound];
+        uint kingdomId = round.kingdomsKeys[_key];
         Kingdom storage kingdom = kingdoms[kingdomId];
-
-        uint bet = (kingdom.returnPrice.mul(KINGDOM_MULTIPLIER).div(100)).mul(_tier);
-        uint jackpotCommission = kingdom.returnPrice.mul(JACKPOT_COMMISSION_RATIO).div(100);
-        uint teamCommission = kingdom.returnPrice.mul(TEAM_COMMISSION_RATIO).div(100);
-
-        uint price = kingdom.returnPrice.add(jackpotCommission).add(teamCommission).add(bet);
-        require (msg.value >= price);
-
-        uint minimumPrice = price.add(bet);
-
-        if (teamCommission != 0) {
-            recordCommissionEarned(teamCommission);
+        require((kingdom.kingdomTier + 1) < 6);
+        uint requiredPrice = kingdom.minimumPrice;
+        if (_locked == true) {
+            requiredPrice = requiredPrice.add(ACTION_TAX);
         }
 
+        require (msg.value >= requiredPrice);
+        uint jackpotCommission = (msg.value).sub(kingdom.returnPrice);
+
         if (kingdom.returnPrice > 0) {
-            nbKingdoms[kingdom.owner]--;
-            
+            round.nbKingdoms[kingdom.owner]--;
             if (kingdom.kingdomType == 1) {
-                nbKingdomsType1[kingdom.owner]--;
+                round.nbKingdomsType1[kingdom.owner]--;
             } else if (kingdom.kingdomType == 2) {
-                nbKingdomsType2[kingdom.owner]--;
+                round.nbKingdomsType2[kingdom.owner]--;
             } else if (kingdom.kingdomType == 3) {
-                nbKingdomsType3[kingdom.owner]--;
+                round.nbKingdomsType3[kingdom.owner]--;
             } else if (kingdom.kingdomType == 4) {
-                nbKingdomsType4[kingdom.owner]--;
+                round.nbKingdomsType4[kingdom.owner]--;
             } else if (kingdom.kingdomType == 5) {
-                nbKingdomsType5[kingdom.owner]--;
+                round.nbKingdomsType5[kingdom.owner]--;
             }
             
             compensateLatestMonarch(kingdom.lastTransaction, kingdom.returnPrice);
         }
         
         uint jackpotSplitted = jackpotCommission.mul(50).div(100);
-        globalJackpot.balance = globalJackpot.balance.add(jackpotSplitted);
+        round.globalJackpot.balance = round.globalJackpot.balance.add(jackpotSplitted);
 
-        kingdom.kingdomType = _type;
-        kingdom.kingdomTier = _tier;
+        kingdom.kingdomTier++;
         kingdom.title = _title;
-        kingdom.returnPrice = minimumPrice;
-        kingdom.minimumPrice = calculatePrice(minimumPrice, 1);
-        kingdom.owner = msg.sender;
 
-        uint transactionId = kingdomTransactions.push(Transaction("", msg.sender, msg.value, 0, 0, 0)) - 1;
-        kingdomTransactions[transactionId].tier = _tier;
-        kingdomTransactions[transactionId].jackpotContribution = jackpotSplitted;
-        kingdomTransactions[transactionId].kingdomKey = _key;
-        
-        kingdom.transactionCount++;
-        kingdom.lastTransaction = transactionId;
-
-        nbTransactions[msg.sender]++;
-        nbKingdoms[msg.sender]++;
-        
-        if (_type == 1) {
-            nbKingdomsType1[msg.sender]++;
-            jackpot1.balance = jackpot1.balance.add(jackpotSplitted);
-        } else if (_type == 2) {
-            nbKingdomsType2[msg.sender]++;
-            jackpot2.balance = jackpot2.balance.add(jackpotSplitted);
-        } else if (_type == 3) {
-            nbKingdomsType3[msg.sender]++;
-            jackpot3.balance = jackpot3.balance.add(jackpotSplitted);
-        } else if (_type == 4) {
-            nbKingdomsType4[msg.sender]++;
-            jackpot4.balance = jackpot4.balance.add(jackpotSplitted);
-        } else if (_type == 5) {
-            nbKingdomsType5[msg.sender]++;
-            jackpot5.balance = jackpot5.balance.add(jackpotSplitted);
+        if (kingdom.kingdomTier == 5) {
+            kingdom.returnPrice = 0;
+        } else {
+            kingdom.returnPrice = kingdom.minimumPrice.mul(2);
+            kingdom.minimumPrice = kingdom.minimumPrice.add(kingdom.minimumPrice.mul(2));
         }
 
-        setNewWinner(msg.sender, _type, jackpotSplitted);
+        kingdom.owner = msg.sender;
+        kingdom.locked = _locked;
+
+        uint transactionId = kingdomTransactions.push(Transaction("", msg.sender, msg.value, 0, jackpotSplitted)) - 1;
+        kingdomTransactions[transactionId].kingdomKey = _key;
+        kingdom.transactionCount++;
+        kingdom.lastTransaction = transactionId;
+        
+        setNewJackpot(kingdom.kingdomType, jackpotSplitted, msg.sender);
         LandPurchasedEvent(_key, msg.sender);
     }
 
-    function calculatePrice(uint _returnPrice, uint _tier) internal pure returns (uint price) {
-        uint jackpotComission = _returnPrice.mul(JACKPOT_COMMISSION_RATIO).div(100);
-        uint teamComission = _returnPrice.mul(TEAM_COMMISSION_RATIO).div(100);
-        uint bet = (_returnPrice.mul(KINGDOM_MULTIPLIER).div(100)).mul(_tier);
-        uint calculatePrice = _returnPrice.add(jackpotComission).add(teamComission).add(bet);
-        return calculatePrice;
+    function setNewJackpot(uint kingdomType, uint jackpotSplitted, address sender) internal {
+        rounds[currentRound].nbTransactions[sender]++;
+        rounds[currentRound].nbKingdoms[sender]++;
+        if (kingdomType == 1) {
+            rounds[currentRound].nbKingdomsType1[sender]++;
+            rounds[currentRound].jackpot1.balance = rounds[currentRound].jackpot1.balance.add(jackpotSplitted);
+        } else if (kingdomType == 2) {
+            rounds[currentRound].nbKingdomsType2[sender]++;
+            rounds[currentRound].jackpot2.balance = rounds[currentRound].jackpot2.balance.add(jackpotSplitted);
+        } else if (kingdomType == 3) {
+            rounds[currentRound].nbKingdomsType3[sender]++;
+            rounds[currentRound].jackpot3.balance = rounds[currentRound].jackpot3.balance.add(jackpotSplitted);
+        } else if (kingdomType == 4) {
+            rounds[currentRound].nbKingdomsType4[sender]++;
+            rounds[currentRound].jackpot4.balance = rounds[currentRound].jackpot4.balance.add(jackpotSplitted);
+        } else if (kingdomType == 5) {
+            rounds[currentRound].nbKingdomsType5[sender]++;
+            rounds[currentRound].jackpot5.balance = rounds[currentRound].jackpot5.balance.add(jackpotSplitted);
+        }
+        setNewWinner(msg.sender, kingdomType);
     }
 
-    function upgradeKingdomTier(string _key, uint _tier) public payable  checkKingdomExistence(_key) onlyKingdomOwner(_key, msg.sender) {
-        require(msg.value >= 0.05 ether);
-        require(_tier > 0);
-        kingdoms[kingdomsKeys[_key]].kingdomTier = _tier;
-    }
-
-    function upgradeKingdomType(string _key, uint _type) public payable  checkKingdomExistence(_key) onlyKingdomOwner(_key, msg.sender) {
-        require(msg.value >= 0.05 ether);
-        require(_type > 0);
-        kingdoms[kingdomsKeys[_key]].kingdomType = _type;
+    function setLock(string _key, bool _locked) public payable checkKingdomExistence(_key) onlyKingdomOwner(_key, msg.sender) {
+        if (_locked == true) { require(msg.value >= ACTION_TAX); }
+        kingdoms[rounds[currentRound].kingdomsKeys[_key]].locked = _locked;
+        if (msg.value > 0) { asyncSend(bookerAddress, msg.value); }
     }
 
     //
     //  User can call this function to generate new kingdoms (within the limits of available land)
     //
-    function createKingdom(string _key, string _title, uint _type, uint _tier) public payable {
-
+    function createKingdom(address owner, string _key, string _title, uint _type, bool _locked) onlyForRemainingKingdoms() public payable {
         require(_type > 0);
-        require(_tier > 0);
+        require(_type < 6);
+        uint basePrice = STARTING_CLAIM_PRICE_WEI;
+        uint requiredPrice = basePrice;
+        if (_locked == true) { requiredPrice = requiredPrice.add(ACTION_TAX); }
+        require(msg.value >= requiredPrice);
+        require(rounds[currentRound].kingdomsCreated[_key] == false);
+        uint refundPrice = STARTING_CLAIM_PRICE_WEI.mul(2);
+        uint nextMinimumPrice = STARTING_CLAIM_PRICE_WEI.add(refundPrice);
+        uint kingdomId = kingdoms.push(Kingdom("", "", 1, _type, 0, 0, 1, refundPrice, address(0), false)) - 1;
+        
+        kingdoms[kingdomId].title = _title;
+        kingdoms[kingdomId].owner = owner;
+        kingdoms[kingdomId].key = _key;
+        kingdoms[kingdomId].minimumPrice = nextMinimumPrice;
+        kingdoms[kingdomId].locked = _locked;
 
-        uint bet = (STARTING_CLAIM_PRICE_WEI.mul(KINGDOM_MULTIPLIER).div(100)).mul(_tier);
-        uint minimumPrice = STARTING_CLAIM_PRICE_WEI.add(bet);
+        rounds[currentRound].kingdomsKeys[_key] = kingdomId;
+        rounds[currentRound].kingdomsCreated[_key] = true;
+        
+        uint jackpotSplitted = requiredPrice.mul(50).div(100);
+        rounds[currentRound].globalJackpot.balance = rounds[currentRound].globalJackpot.balance.add(jackpotSplitted);
 
-        require(msg.value >= minimumPrice);
-        require(kingdomsCreated[_key] == false);
-        require(remainingKingdoms > 0);
-
-        remainingKingdoms--;
-
-        uint returnPrice = minimumPrice.add(bet);
-        uint nextMinimumPrice = calculatePrice(returnPrice, 1);
-
-        uint kingdomId = kingdoms.push(Kingdom(_title, _key, _tier, _type, nextMinimumPrice, 0, 1, returnPrice, msg.sender)) - 1;
-        kingdomsKeys[_key] = kingdomId;
-        kingdomsCreated[_key] = true;
-
-        uint transactionId = kingdomTransactions.push(Transaction(_key, msg.sender, msg.value, 0, 0, 0)) - 1;
-        kingdomTransactions[transactionId].tier = _tier;
+        uint transactionId = kingdomTransactions.push(Transaction("", msg.sender, msg.value, 0, jackpotSplitted)) - 1;
+        kingdomTransactions[transactionId].kingdomKey = _key;
         kingdoms[kingdomId].lastTransaction = transactionId;
        
-        nbTransactions[msg.sender]++;
-        nbKingdoms[msg.sender]++;
-        
-        if (_type == 1) {
-            nbKingdomsType1[msg.sender]++;
-        } else if (_type == 2) {
-            nbKingdomsType2[msg.sender]++;
-        } else if (_type == 3) {
-            nbKingdomsType3[msg.sender]++;
-        } else if (_type == 4) {
-            nbKingdomsType4[msg.sender]++;
-        } else if (_type == 5) {
-            nbKingdomsType5[msg.sender]++;
-        }
-
-        setNewWinner(msg.sender, _type, 0);
-        winnerCapByType[_type]++;
-
+        setNewJackpot(_type, jackpotSplitted, msg.sender);
         LandCreatedEvent(_key, msg.sender);
-    }
-
-    //
-    //  Record fees payment 
-    //
-    function recordCommissionEarned(uint _commissionWei) internal {
-        asyncSend(bookerAddress, _commissionWei);
     }
 
     //
@@ -332,110 +386,86 @@ contract Map is PullPayment, Destructible, ReentrancyGuard {
     //
     function forceWithdrawPayments(address payee) public onlyOwner {
         uint256 payment = payments[payee];
-
         require(payment != 0);
         require(this.balance >= payment);
-
         totalPayments = totalPayments.sub(payment);
         payments[payee] = 0;
-
         assert(payee.send(payment));
+    }
+
+    function getEndTime() public view returns (uint endTime) {
+        return rounds[currentRound].endTime;
+    }
+
+    function sendJackpotCompensation(Jackpot jackpot) internal {
+        if (jackpot.winner != address(0) && jackpot.balance > 0) {
+            require(this.balance >= jackpot.balance);
+            uint teamComission = (jackpot.balance.mul(TEAM_COMMISSION_RATIO)).div(100);
+            asyncSend(bookerAddress, teamComission);
+            asyncSend(jackpot.winner, jackpot.balance.sub(teamComission));
+        }
     }
 
     //
     //  After time expiration, owner can call this function to activate the next round of the game
     //
-    function activateNextRound() public onlyOwner() checkIsClosed() {
-
-        endTime = now + 7 days;
-        remainingKingdoms += 3;
-        round++;
-
-        if (globalJackpot.winner != address(0) && globalJackpot.balance > 0) {
-            require(this.balance >= globalJackpot.balance);
-            asyncSend(globalJackpot.winner, globalJackpot.balance);
-            globalJackpot.winner = address(0);
-            globalJackpot.balance = 0;
-        }
-
-        if (jackpot1.winner != address(0) && jackpot1.balance > 0) {
-            require(this.balance >= jackpot1.balance);
-            asyncSend(jackpot1.winner, jackpot1.balance);
-            jackpot1.winner = address(0);
-            jackpot1.balance = 0;
-        }
-
-        if (jackpot2.winner != address(0) && jackpot2.balance > 0) {
-            require(this.balance >= jackpot2.balance);
-            asyncSend(jackpot2.winner, jackpot2.balance);
-            jackpot2.winner = address(0);
-            jackpot2.balance = 0;
-        }
-
-        if (jackpot3.winner != address(0) && jackpot3.balance > 0) {
-            require(this.balance >= jackpot3.balance);
-            asyncSend(jackpot3.winner, jackpot3.balance);
-            jackpot3.winner = address(0);
-            jackpot3.balance = 0;
-        }
-
-        if (jackpot4.winner != address(0) && jackpot4.balance > 0) {
-            require(this.balance >= jackpot4.balance);
-            asyncSend(jackpot4.winner, jackpot4.balance);
-            jackpot4.winner = address(0);
-            jackpot4.balance = 0;
-        }
-
-        if (jackpot5.winner != address(0) && jackpot5.balance > 0) {
-            require(this.balance >= jackpot5.balance);
-            asyncSend(jackpot5.winner, jackpot5.balance);
-            jackpot5.winner = address(0);
-            jackpot5.balance = 0;
-        }
+    function activateNextRound() public checkIsClosed() {
+        currentRound++;
+        rounds[currentRound] = Round(Jackpot(address(0), 0), Jackpot(address(0), 0), Jackpot(address(0), 0), Jackpot(address(0), 0), Jackpot(address(0), 0), Jackpot(address(0), 0), 0, 0);
+        rounds[currentRound].startTime = now;
+        rounds[currentRound].endTime = now + 7 days;
+        delete kingdoms;
+        delete kingdomTransactions;
+        sendJackpotCompensation(rounds[currentRound].globalJackpot);
+        sendJackpotCompensation(rounds[currentRound].jackpot1);
+        sendJackpotCompensation(rounds[currentRound].jackpot2);
+        sendJackpotCompensation(rounds[currentRound].jackpot3);
+        sendJackpotCompensation(rounds[currentRound].jackpot4);
+        sendJackpotCompensation(rounds[currentRound].jackpot5);
     }
 
     // GETTER AND SETTER FUNCTIONS
 
-    function setNewWinner(address _sender, uint _type, uint _jackpot) internal {
-        if (globalJackpot.winner == address(0)) {
-            globalJackpot.winner = _sender;
+    function setNewWinner(address _sender, uint _type) internal {
+        if (rounds[currentRound].globalJackpot.winner == address(0)) {
+            rounds[currentRound].globalJackpot.winner = _sender;
         } else {
-            if (nbKingdoms[_sender] == nbKingdoms[globalJackpot.winner]) {
-                if (nbTransactions[_sender] > nbTransactions[globalJackpot.winner]) {
-                    globalJackpot.winner = _sender;
+            if (rounds[currentRound].nbKingdoms[_sender] == rounds[currentRound].nbKingdoms[rounds[currentRound].globalJackpot.winner]) {
+                if (rounds[currentRound].nbTransactions[_sender] > rounds[currentRound].nbTransactions[rounds[currentRound].globalJackpot.winner]) {
+                    rounds[currentRound].globalJackpot.winner = _sender;
                 }
-            } else if (nbKingdoms[_sender] > nbKingdoms[globalJackpot.winner]) {
-                globalJackpot.winner = _sender;
+            } else if (rounds[currentRound].nbKingdoms[_sender] > rounds[currentRound].nbKingdoms[rounds[currentRound].globalJackpot.winner]) {
+                rounds[currentRound].globalJackpot.winner = _sender;
             }
         }
-
-        setTypedJackpotWinner(_sender, _type, _jackpot);
+        setTypedJackpotWinner(_sender, _type);
     }
 
-    function isFinalized() public view returns (bool) {
-        return now >= endTime;
-    }
-
-    function getKingdomsNumberByAddress(address addr) public view returns (uint nb) {
-        return nbKingdoms[addr];
-    }
-
-    function getCurrentOwner(string key) public view returns (address addr) {
-        return kingdoms[kingdomsKeys[key]].owner;
+    function getJackpot(uint _nb) public view returns (address winner, uint balance, uint winnerCap) {
+        Round storage round = rounds[currentRound];
+        if (_nb == 1) {
+            return (round.jackpot1.winner, round.jackpot1.balance, round.nbKingdomsType1[round.jackpot1.winner]);
+        } else if (_nb == 2) {
+            return (round.jackpot2.winner, round.jackpot2.balance, round.nbKingdomsType2[round.jackpot2.winner]);
+        } else if (_nb == 3) {
+            return (round.jackpot3.winner, round.jackpot3.balance, round.nbKingdomsType3[round.jackpot3.winner]);
+        } else if (_nb == 4) {
+            return (round.jackpot4.winner, round.jackpot4.balance, round.nbKingdomsType4[round.jackpot4.winner]);
+        } else if (_nb == 5) {
+            return (round.jackpot5.winner, round.jackpot5.balance, round.nbKingdomsType5[round.jackpot5.winner]);
+        } else {
+            return (round.globalJackpot.winner, round.globalJackpot.balance, round.nbKingdoms[round.globalJackpot.winner]);
+        }
     }
 
     function getKingdomCount() public view returns (uint kingdomCount) {
         return kingdoms.length;
     }
 
-    function getKingdomIndex(string key) public view returns (uint index) {
-        return kingdomsKeys[key];
-    }
-
-    function getKingdomInformations(string kingdomKey) public view returns (string title, uint minimumPrice, uint lastTransaction, uint transactionCount, address currentOwner) {
-        uint kingdomId = kingdomsKeys[kingdomKey];
+    function getKingdomInformations(string kingdomKey) public view returns (string title, uint minimumPrice, uint lastTransaction, uint transactionCount, address currentOwner, bool locked) {
+        uint kingdomId = rounds[currentRound].kingdomsKeys[kingdomKey];
         Kingdom storage kingdom = kingdoms[kingdomId];
-        return (kingdom.title, kingdom.minimumPrice, kingdom.lastTransaction, kingdom.transactionCount, kingdom.owner);
+        return (kingdom.title, kingdom.minimumPrice, kingdom.lastTransaction, kingdom.transactionCount, kingdom.owner, kingdom.locked);
     }
 
 }
