@@ -1,6 +1,12 @@
-# Game of Blocks
+# Game of Blocks (2018)
 
-http://gameofblocks.io
+**🚨 Outdated. This smart contract and the associated documentation date from 2018**
+
+It's the first version of our smart-contract which dates from 2018.
+
+---
+
+### https://gameofblocks.io
 
 Decentralized strategy game powered
 by Ethereum smart contracts
